@@ -6,7 +6,9 @@ using Google.Apis.Auth.OAuth2;
 using Google.Apis.Gmail.v1;
 using Google.Apis.Gmail.v1.Data;
 using Google.Apis.Services;
-using Google.Apis.Util.Store;
+using Newtonsoft.Json;
+using Google.Apis.Auth.OAuth2.Flows;
+using Google.Apis.Auth.OAuth2.Responses;
 
 namespace AuthorizationAPI.Services
 {
@@ -15,6 +17,7 @@ namespace AuthorizationAPI.Services
         private readonly string _connectionString;
         private readonly Dictionary<string, string> _sqlRequests;
         private static string ApplicationName = "FurniroomMailSystem";
+        private static string TokenPath = Path.Combine(Directory.GetCurrentDirectory(), "GmailAPI", "token.json");
         private static string CredPath = Path.Combine(Directory.GetCurrentDirectory(), "GmailAPI", "credentials.json");
 
         public AuthorizationService(string connectionString, Dictionary<string, string> sqlRequests)
@@ -107,20 +110,16 @@ namespace AuthorizationAPI.Services
 
         private GmailService GetGmailService()
         {
-            UserCredential credential;
+            var clientSecrets = JsonConvert.DeserializeObject<ClientSecrets>(File.ReadAllText(CredPath));
+            var token = JsonConvert.DeserializeObject<TokenResponse>(File.ReadAllText(TokenPath));
 
-            using (var credStream = new FileStream(CredPath, FileMode.Open, FileAccess.Read))
-            {
-                var clientSecrets = GoogleClientSecrets.Load(credStream).Secrets;
-
-                credential = GoogleWebAuthorizationBroker.AuthorizeAsync(
-                    clientSecrets,
-                    new[] { GmailService.Scope.GmailSend },
-                    "user",
-                    CancellationToken.None,
-                    new FileDataStore(Path.Combine(Directory.GetCurrentDirectory(), "GmailAPI"), true)
-                ).Result;
-            }
+            var credential = new UserCredential(new GoogleAuthorizationCodeFlow(
+                new GoogleAuthorizationCodeFlow.Initializer
+                {
+                    ClientSecrets = clientSecrets
+                }),
+                "user",
+                token);
 
             return new GmailService(new BaseClientService.Initializer
             {
@@ -207,7 +206,6 @@ namespace AuthorizationAPI.Services
             return message;
         }
 
-
         public string Login(LoginModel loginModel)
         {
             using (var connection = new MySqlConnection(_connectionString))
@@ -231,10 +229,5 @@ namespace AuthorizationAPI.Services
                 }
             }
         }
-
-
-
-
-
     }
 }
