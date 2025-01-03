@@ -111,38 +111,41 @@ namespace AuthorizationAPI.Services
 
         private GmailService GetGmailService()
         {
-            // Чтение client_secrets.json
             var clientSecrets = JsonConvert.DeserializeObject<ClientSecrets>(File.ReadAllText(CredPath));
+            var token = JsonConvert.DeserializeObject<TokenResponse>(File.ReadAllText(TokenPath));
 
-            // Чтение текущего токена
-            var tokenResponse = JsonConvert.DeserializeObject<TokenResponse>(File.ReadAllText(TokenPath));
-
-            // Создаём поток авторизации
-            var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
+            // Проверяем срок действия токена
+            if (token.IsExpired(Google.Apis.Util.SystemClock.Default))
             {
-                ClientSecrets = clientSecrets
-            });
+                // Создаём поток для обновления токена
+                var flow = new GoogleAuthorizationCodeFlow(
+                    new GoogleAuthorizationCodeFlow.Initializer
+                    {
+                        ClientSecrets = clientSecrets
+                    });
 
-            // Проверяем срок действия access_token
-            if (tokenResponse.IsExpired(SystemClock.Default))
-            {
-                // Обновляем токен
-                tokenResponse = flow.RefreshTokenAsync("user", tokenResponse.RefreshToken, CancellationToken.None).Result;
+                token = flow.RefreshTokenAsync("user", token.RefreshToken, CancellationToken.None).Result;
 
-                // Сохраняем обновлённый токен в файл
-                File.WriteAllText(TokenPath, JsonConvert.SerializeObject(tokenResponse, Formatting.Indented));
+                // Перезаписываем обновлённый токен в файл
+                File.WriteAllText(TokenPath, JsonConvert.SerializeObject(token));
             }
 
-            // Создаём учётные данные
-            var credential = new UserCredential(flow, "user", tokenResponse);
+            var credential = new UserCredential(
+                new GoogleAuthorizationCodeFlow(
+                    new GoogleAuthorizationCodeFlow.Initializer
+                    {
+                        ClientSecrets = clientSecrets
+                    }),
+                "user",
+                token);
 
-            // Возвращаем GmailService
             return new GmailService(new BaseClientService.Initializer
             {
                 HttpClientInitializer = credential,
                 ApplicationName = ApplicationName
             });
         }
+
 
 
         private string Base64UrlEncode(MimeMessage message)
