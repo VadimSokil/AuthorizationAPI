@@ -10,6 +10,8 @@ namespace Auth
             var builder = WebApplication.CreateBuilder(args);
             ConfigurationManager configuration = builder.Configuration;
             var connectionString = Environment.GetEnvironmentVariable("connectionString");
+            var serviceEmail = Environment.GetEnvironmentVariable("serviceEmail");
+            var servicePassword = Environment.GetEnvironmentVariable("servicePassword");
             var requestsSection = configuration.GetSection("Requests");
 
             var sqlRequests = new Dictionary<string, string>();
@@ -20,7 +22,7 @@ namespace Auth
 
 
             // Add services to the container.
-            builder.Services.AddScoped<IAuthorizationService, AuthorizationService>(provider => new AuthorizationService(connectionString, sqlRequests));
+            builder.Services.AddScoped<IAuthorizationService, AuthorizationService>(provider => new AuthorizationService(connectionString, serviceEmail, servicePassword, sqlRequests));
 
 
             builder.Services.AddCors(options =>

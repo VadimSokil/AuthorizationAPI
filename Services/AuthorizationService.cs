@@ -1,29 +1,26 @@
 ﻿using AuthorizationAPI.Interfaces;
 using AuthorizationAPI.Models;
 using MySql.Data.MySqlClient;
-using MimeKit;
-using Google.Apis.Auth.OAuth2;
-using Google.Apis.Gmail.v1;
-using Google.Apis.Gmail.v1.Data;
-using Google.Apis.Services;
-using Newtonsoft.Json;
-using Google.Apis.Auth.OAuth2.Flows;
-using Google.Apis.Auth.OAuth2.Responses;
-using Google.Apis.Util;
+using System.Net;
+using System.Net.Mail;
 
 namespace AuthorizationAPI.Services
 {
     public class AuthorizationService : IAuthorizationService
     {
         private readonly string _connectionString;
+        private readonly string _serviceEmail;
+        private readonly string _servicePassword;
         private readonly Dictionary<string, string> _sqlRequests;
-        private static string ApplicationName = "FurniroomMailSystem";
-        private static string TokenPath = Path.Combine(Directory.GetCurrentDirectory(), "GmailAPI", "token.json");
-        private static string CredPath = Path.Combine(Directory.GetCurrentDirectory(), "GmailAPI", "credentials.json");
 
-        public AuthorizationService(string connectionString, Dictionary<string, string> sqlRequests)
+        private const string SmtpHost = "smtp.gmail.com";
+        private const int SmtpPort = 587;
+
+        public AuthorizationService(string connectionString, string serviceEmail, string servicePassword, Dictionary<string, string> sqlRequests)
         {
             _connectionString = connectionString;
+            _serviceEmail = serviceEmail;
+            _servicePassword = servicePassword;
             _sqlRequests = sqlRequests;
         }
 
@@ -85,78 +82,22 @@ namespace AuthorizationAPI.Services
 
         private void SendEmail(string recipientEmail, int verificationCode)
         {
-            var service = GetGmailService();
-
-            if (service == null)
+            var message = new MailMessage
             {
-                throw new Exception("Не удалось авторизоваться для отправки электронной почты.");
-            }
-
-            var message = new MimeMessage();
-            message.From.Add(new MailboxAddress("Furniroom", "vadimsokil.work@gmail.com"));
-            message.To.Add(new MailboxAddress("", recipientEmail));
-            message.Subject = "Secure code";
-            message.Body = new TextPart("plain")
-            {
-                Text = $"Hi, your code: {verificationCode}"
+                From = new MailAddress(_serviceEmail, "Furniroom"),
+                Subject = "Secure code",
+                Body = $"Hi, your code: {verificationCode}",
+                IsBodyHtml = false
             };
 
-            var gmailMessage = new Message
+            message.To.Add(new MailAddress(recipientEmail));
+
+            using (var smtp = new SmtpClient(SmtpHost, SmtpPort))
             {
-                Raw = Base64UrlEncode(message)
-            };
+                smtp.Credentials = new NetworkCredential(_serviceEmail, _servicePassword);
+                smtp.EnableSsl = true;
 
-            service.Users.Messages.Send(gmailMessage, "me").Execute();
-        }
-
-        private GmailService GetGmailService()
-        {
-            var clientSecrets = JsonConvert.DeserializeObject<ClientSecrets>(File.ReadAllText(CredPath));
-            var token = JsonConvert.DeserializeObject<TokenResponse>(File.ReadAllText(TokenPath));
-
-            // Проверяем срок действия токена
-            if (token.IsExpired(Google.Apis.Util.SystemClock.Default))
-            {
-                // Создаём поток для обновления токена
-                var flow = new GoogleAuthorizationCodeFlow(
-                    new GoogleAuthorizationCodeFlow.Initializer
-                    {
-                        ClientSecrets = clientSecrets
-                    });
-
-                token = flow.RefreshTokenAsync("user", token.RefreshToken, CancellationToken.None).Result;
-
-                // Перезаписываем обновлённый токен в файл
-                File.WriteAllText(TokenPath, JsonConvert.SerializeObject(token));
-            }
-
-            var credential = new UserCredential(
-                new GoogleAuthorizationCodeFlow(
-                    new GoogleAuthorizationCodeFlow.Initializer
-                    {
-                        ClientSecrets = clientSecrets
-                    }),
-                "user",
-                token);
-
-            return new GmailService(new BaseClientService.Initializer
-            {
-                HttpClientInitializer = credential,
-                ApplicationName = ApplicationName
-            });
-        }
-
-
-
-        private string Base64UrlEncode(MimeMessage message)
-        {
-            using (var memoryStream = new MemoryStream())
-            {
-                message.WriteTo(memoryStream);
-                return Convert.ToBase64String(memoryStream.ToArray())
-                    .Replace('+', '-')
-                    .Replace('/', '_')
-                    .TrimEnd('=');
+                smtp.Send(message);
             }
         }
 
@@ -166,7 +107,6 @@ namespace AuthorizationAPI.Services
             {
                 connection.Open();
 
-                // Проверяем наличие почты в базе данных
                 using (var checkCommand = new MySqlCommand(_sqlRequests["EmailCheck"], connection))
                 {
                     checkCommand.Parameters.AddWithValue("@Email", email);
@@ -174,17 +114,15 @@ namespace AuthorizationAPI.Services
                     var result = Convert.ToInt32(checkCommand.ExecuteScalar());
                     if (result <= 0)
                     {
-                        return string.Empty; // Почта не найдена
+                        return string.Empty;
                     }
                 }
 
-                // Генерация нового пароля
                 const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
                 Random random = new Random();
                 string newPassword = new string(Enumerable.Repeat(chars, 8)
                     .Select(s => s[random.Next(s.Length)]).ToArray());
 
-                // Обновление пароля в базе данных
                 using (var updateCommand = new MySqlCommand(_sqlRequests["ResetPassword"], connection))
                 {
                     updateCommand.Parameters.AddWithValue("@Email", email);
@@ -193,37 +131,38 @@ namespace AuthorizationAPI.Services
                     int rowsAffected = updateCommand.ExecuteNonQuery();
                     if (rowsAffected <= 0)
                     {
-                        return string.Empty; // Ошибка обновления пароля
+                        return string.Empty;
                     }
                 }
 
-                var service = GetGmailService();
-                if (service != null)
+                try
                 {
-                    var message = new Message
+                    var message = new MailMessage
                     {
-                        Raw = Base64UrlEncode(CreateResetPasswordMessage(email, newPassword))
+                        From = new MailAddress(_serviceEmail, "Furniroom"),
+                        Subject = "Reset password",
+                        Body = $"Hi, your new password: {newPassword}",
+                        IsBodyHtml = false
                     };
 
-                    service.Users.Messages.Send(message, "me").Execute();
+                    message.To.Add(new MailAddress(email));
+
+                    using (var smtp = new SmtpClient(SmtpHost, SmtpPort))
+                    {
+                        smtp.Credentials = new NetworkCredential(_serviceEmail, _servicePassword);
+                        smtp.EnableSsl = true;
+
+                        smtp.Send(message);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Ошибка при отправке письма: {ex.Message}");
+                    return string.Empty;
                 }
 
-                return newPassword; // Возвращаем только пароль
+                return newPassword;
             }
-        }
-
-        private MimeMessage CreateResetPasswordMessage(string email, string newPassword)
-        {
-            var message = new MimeMessage();
-            message.From.Add(new MailboxAddress("Furniroom", "vadimsokil.work@gmail.com"));
-            message.To.Add(new MailboxAddress("", email));
-            message.Subject = "Reset password";
-            message.Body = new TextPart("plain")
-            {
-                Text = $"Hi, your new password: {newPassword}"
-            };
-
-            return message;
         }
 
         public string Login(LoginModel loginModel)
