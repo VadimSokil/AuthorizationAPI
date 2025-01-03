@@ -9,6 +9,7 @@ using Google.Apis.Services;
 using Newtonsoft.Json;
 using Google.Apis.Auth.OAuth2.Flows;
 using Google.Apis.Auth.OAuth2.Responses;
+using Google.Apis.Util;
 
 namespace AuthorizationAPI.Services
 {
@@ -110,23 +111,39 @@ namespace AuthorizationAPI.Services
 
         private GmailService GetGmailService()
         {
+            // Чтение client_secrets.json
             var clientSecrets = JsonConvert.DeserializeObject<ClientSecrets>(File.ReadAllText(CredPath));
-            var token = JsonConvert.DeserializeObject<TokenResponse>(File.ReadAllText(TokenPath));
 
-            var credential = new UserCredential(new GoogleAuthorizationCodeFlow(
-                new GoogleAuthorizationCodeFlow.Initializer
-                {
-                    ClientSecrets = clientSecrets
-                }),
-                "user",
-                token);
+            // Чтение текущего токена
+            var tokenResponse = JsonConvert.DeserializeObject<TokenResponse>(File.ReadAllText(TokenPath));
 
+            // Создаём поток авторизации
+            var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
+            {
+                ClientSecrets = clientSecrets
+            });
+
+            // Проверяем срок действия access_token
+            if (tokenResponse.IsExpired(SystemClock.Default))
+            {
+                // Обновляем токен
+                tokenResponse = flow.RefreshTokenAsync("user", tokenResponse.RefreshToken, CancellationToken.None).Result;
+
+                // Сохраняем обновлённый токен в файл
+                File.WriteAllText(TokenPath, JsonConvert.SerializeObject(tokenResponse, Formatting.Indented));
+            }
+
+            // Создаём учётные данные
+            var credential = new UserCredential(flow, "user", tokenResponse);
+
+            // Возвращаем GmailService
             return new GmailService(new BaseClientService.Initializer
             {
                 HttpClientInitializer = credential,
                 ApplicationName = ApplicationName
             });
         }
+
 
         private string Base64UrlEncode(MimeMessage message)
         {
